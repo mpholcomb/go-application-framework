@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sync"
 
 	"github.com/rs/zerolog"
+	"github.com/snyk/error-catalog-golang-public/cli"
+	"github.com/snyk/error-catalog-golang-public/snyk_errors"
 
 	"github.com/snyk/go-application-framework/pkg/configuration"
 )
@@ -100,11 +103,11 @@ func (r *fileRegistry) load(name string) (*profileImpl, error) {
 	case err != nil:
 		return nil, fmt.Errorf("profile %s: %w", name, err)
 	case !info.Mode().IsRegular():
-		return nil, fmt.Errorf("%w: %s: not a regular file", ErrCorrupt, name)
+		return nil, unreadableError(name, "not a regular file", fmt.Errorf("%w: %s: not a regular file", ErrCorrupt, name))
 	default:
 		// an unreadable or invalid file must not pass as an empty profile, or the command would run with the defaults
 		if err = checkProfileFile(path); err != nil {
-			return nil, fmt.Errorf("%w: %s: %w", ErrCorrupt, name, err)
+			return nil, unreadableError(name, reason(err), fmt.Errorf("%w: %s: %w", ErrCorrupt, name, err))
 		}
 	}
 
@@ -117,9 +120,30 @@ func (r *fileRegistry) load(name string) (*profileImpl, error) {
 
 func validName(name string) error {
 	if !namePattern.MatchString(name) || reservedNames.MatchString(name) {
-		return fmt.Errorf("%w: %q", ErrInvalidName, name)
+		return cli.NewInvalidConfigProfileNameError(
+			fmt.Sprintf("%q is not a valid profile name.", name),
+			snyk_errors.WithCause(fmt.Errorf("%w: %q", ErrInvalidName, name)),
+		)
 	}
 	return nil
+}
+
+// unreadableError returns the error-catalog error for a profile file that cannot be used. The cause, which wraps
+// ErrCorrupt, stays reachable with errors.Is and errors.As.
+func unreadableError(name, why string, cause error) error {
+	return cli.NewConfigProfileUnreadableError(
+		fmt.Sprintf("The file of profile %q cannot be used: %s.", name, why),
+		snyk_errors.WithCause(cause),
+	)
+}
+
+// reason returns the message of err without the path of the file, which a file system error carries.
+func reason(err error) string {
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) {
+		return pathErr.Err.Error()
+	}
+	return err.Error()
 }
 
 // checkProfileFile reports whether the file is empty or holds a JSON object.

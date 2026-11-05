@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	"github.com/rs/zerolog"
+	"github.com/snyk/error-catalog-golang-public/cli"
+	"github.com/snyk/error-catalog-golang-public/snyk_errors"
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,6 +34,12 @@ const (
 	defaultPayload = "default-value|default-value|default-value|only-default"
 	// machinePayload is what the leaf workflow reports on the "machine" profile, which lacks the default-only key.
 	machinePayload = "machine-value|machine-value|machine-value|"
+)
+
+// The expected error codes come from the catalog entries themselves, so a renumbering cannot leave the tests behind.
+var (
+	catalogCodeInvalidName = cli.NewInvalidConfigProfileNameError("").ErrorCode
+	catalogCodeUnreadable  = cli.NewConfigProfileUnreadableError("").ErrorCode
 )
 
 type profileEnv struct {
@@ -214,6 +222,15 @@ func assertErrMatches(t *testing.T, err, wantErr error, wantMsg string) {
 	}
 }
 
+// assertCatalogCode checks that err carries an error-catalog error with the code.
+func assertCatalogCode(t *testing.T, err error, code string) {
+	t.Helper()
+	var catalogErr snyk_errors.Error
+	if assert.ErrorAs(t, err, &catalogErr) {
+		assert.Equal(t, code, catalogErr.ErrorCode)
+	}
+}
+
 // assertFailedInvocation checks a failed selection: the invocation fails with the error, the workflow does not run, and
 // the post-invoke hooks see the same error and an empty configuration with a network access bound to it that reads no
 // environment.
@@ -271,6 +288,7 @@ func Test_Engine_Profile_FailedSelectionFailsTheInvocation(t *testing.T) {
 		name         string
 		setup        func(env *profileEnv)
 		wantErr      error
+		wantCode     string // optional: the error-catalog code that the invocation error carries
 		wantMsg      string
 		fix          func(env *profileEnv) // optional: fixing the cause lets the same selection succeed
 		wantAfterFix string
@@ -281,10 +299,21 @@ func Test_Engine_Profile_FailedSelectionFailsTheInvocation(t *testing.T) {
 				require.NoError(env.t, os.WriteFile(filepath.Join(env.dir, "broken.json"), []byte("{not json"), 0o600))
 				env.selectProfile("broken")
 			},
-			wantErr: profile.ErrCorrupt,
+			wantErr:  profile.ErrCorrupt,
+			wantCode: catalogCodeUnreadable,
 		},
-		{name: "name_with_a_path_separator_is_rejected", setup: func(env *profileEnv) { env.selectProfile("../escape") }, wantErr: profile.ErrInvalidName},
-		{name: "name_with_a_space_is_rejected", setup: func(env *profileEnv) { env.selectProfile("Bad Name") }, wantErr: profile.ErrInvalidName},
+		{
+			name:     "name_with_a_path_separator_is_rejected",
+			setup:    func(env *profileEnv) { env.selectProfile("../escape") },
+			wantErr:  profile.ErrInvalidName,
+			wantCode: catalogCodeInvalidName,
+		},
+		{
+			name:     "name_with_a_space_is_rejected",
+			setup:    func(env *profileEnv) { env.selectProfile("Bad Name") },
+			wantErr:  profile.ErrInvalidName,
+			wantCode: catalogCodeInvalidName,
+		},
 		{
 			name:    "nil_profile_fails_the_invocation",
 			setup:   func(env *profileEnv) { env.setRegistry(nilProfileRegistry{}); env.selectProfile("anything") },
@@ -315,6 +344,12 @@ func Test_Engine_Profile_FailedSelectionFailsTheInvocation(t *testing.T) {
 
 			output, err := env.engine.Invoke(NewWorkflowIdentifier("leaf"))
 			assertFailedInvocation(t, env, output, err, tc.wantErr, tc.wantMsg)
+			if tc.wantCode != "" {
+				assertCatalogCode(t, err, tc.wantCode)
+				env.hookMu.Lock()
+				assertCatalogCode(t, env.hookErr, tc.wantCode)
+				env.hookMu.Unlock()
+			}
 
 			if tc.fix != nil {
 				tc.fix(env)

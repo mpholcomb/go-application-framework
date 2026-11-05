@@ -13,11 +13,31 @@ import (
 	"testing"
 
 	"github.com/rs/zerolog"
+	"github.com/snyk/error-catalog-golang-public/cli"
+	"github.com/snyk/error-catalog-golang-public/snyk_errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/snyk/go-application-framework/pkg/configuration"
 )
+
+// The expected error codes come from the catalog entries themselves, so a renumbering cannot leave the tests behind.
+var (
+	codeInvalidName = cli.NewInvalidConfigProfileNameError("").ErrorCode
+	codeUnreadable  = cli.NewConfigProfileUnreadableError("").ErrorCode
+)
+
+// assertCatalogError checks that err is an error-catalog error with the code, that its detail names the profile, and
+// that it still matches the sentinel.
+func assertCatalogError(t *testing.T, err error, code string, sentinel error, name string) {
+	t.Helper()
+	var catalogErr snyk_errors.Error
+	if assert.ErrorAs(t, err, &catalogErr, name) {
+		assert.Equal(t, code, catalogErr.ErrorCode, name)
+		assert.Contains(t, catalogErr.Detail, name)
+	}
+	assert.ErrorIs(t, err, sentinel, name)
+}
 
 // registryEnv is a registry under test with the configuration it derives from and the files it works with.
 type registryEnv struct {
@@ -88,7 +108,7 @@ func Test_Registry_NameValidation(t *testing.T) {
 	for _, tc := range tests {
 		_, err := env.reg.Profile(tc.name)
 		if tc.invalid {
-			assert.ErrorIs(t, err, ErrInvalidName, tc.name)
+			assertCatalogError(t, err, codeInvalidName, ErrInvalidName, tc.name)
 		} else {
 			assert.NoError(t, err, tc.name)
 		}
@@ -250,7 +270,7 @@ func Test_Registry_NonRegularProfileEntryIsErrCorrupt(t *testing.T) {
 
 	for _, name := range []string{"link", "folder"} {
 		_, err := env.reg.Profile(name)
-		assert.ErrorIs(t, err, ErrCorrupt, name)
+		assertCatalogError(t, err, codeUnreadable, ErrCorrupt, name)
 	}
 }
 
@@ -262,7 +282,7 @@ func Test_Registry_CorruptProfileIsErrCorrupt(t *testing.T) {
 
 	for _, name := range []string{"broken", "list", "null"} {
 		_, err := env.reg.Profile(name)
-		assert.ErrorIs(t, err, ErrCorrupt, name)
+		assertCatalogError(t, err, codeUnreadable, ErrCorrupt, name)
 	}
 }
 
